@@ -1,0 +1,9 @@
+# vi: ft=yaml.ansible
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ansible/ansible-lint/main/src/ansiblelint/schemas/ansible.json#/$defs/playbook
+- name: Install and configure kubernetes
+  hosts: kubernetes_master, kubernetes_node
+  become: true
+
+  roles:
+    - role: common
+    - role: kubernetes

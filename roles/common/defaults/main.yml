@@ -1,0 +1,16 @@
+---
+# defaults
+common_root_ca: "{{ undef(hint='Must provide the root CA for the local network') }}"
+
+common_users: "{{ undef(hint='Must provide at least one use to install') }}"
+
+# common_users template:
+# - name:
+#   username:
+#   password:
+#   group:
+#   groups:
+#   gid:
+#   uid:
+#
+#   also ensure you have places the ssh key in common/files/<username>_authorized_keys

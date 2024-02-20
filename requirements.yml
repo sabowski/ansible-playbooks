@@ -1,0 +1,12 @@
+roles:
+  # smtp config in the robertdebock.gitlab gitlab role does not work. There is
+  # a PR in the repo that hasn't been merged yet. When trying this branch the
+  # playbook fails to run. Instead of figuring out why I forked the upstream
+  # myself and recreated the changes in my own branch
+  # When this issue is resolved this should be moved back to using the ansible
+  # galaxy role (be sure to update the version!)
+  - src: https://github.com/sabowski/ansible-role-gitlab.git
+    version: use_smtp_config
+    name: robertdebock.gitlab
+  # - name: robertdebock.gitlab
+  #   version: 1.13.5

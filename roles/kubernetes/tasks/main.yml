@@ -1,0 +1,236 @@
+---
+- name: Load and persist kernel modules
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+    persistent: present
+  loop:
+    - overlay
+    - br_netfilter
+
+- name: Update sysctl parameters
+  ansible.posix.sysctl:
+    name: "{{ item.param }}"
+    value: "{{ item.val }}"
+  loop:
+    - { param: "net.bridge.bridge-nf-call-iptables", val: "1" }
+    - { param: "net.bridge.bridge-nf-call-ip6tables", val: "1" }
+    - { param: "net.ipv4.ip_forward", val: "1" }
+
+- name: Get list of enabled swap partitions
+  ansible.builtin.command:
+    cmd: cat /proc/swaps
+  register: swaps_list
+  changed_when: swaps_list.rc != 0
+  tags: asshole
+
+- name: Disable swaps
+  ansible.builtin.command:
+    cmd: swapoff -a
+  when: swaps_list.stdout_lines | length > 1
+  register: swap_disable
+  changed_when: swap_disable.rc != 0
+  tags: asshole
+
+- name: Ensure swaps are disabled permanantly
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: "^( *UUID.*swap.*)$"
+    replace: '# \1'
+  tags: asshole
+
+- name: Ensure apt keyrings folder exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Get package architecture
+  ansible.builtin.set_fact:
+    pkg_arch: "{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' if ansible_architecture == 'aarch64' else ansible_architecture }}"
+
+- name: Add repo keys
+  ansible.builtin.copy:
+    src: "repo_keys/{{ item.repo }}.gpg"
+    dest: "/etc/apt/keyrings/{{ item.repo }}.gpg"
+    owner: root
+    group: root
+    mode: "0644"
+    checksum: "{{ item.cksum }}"
+  loop:
+    - { repo: "docker", cksum: "7c67919f823e005af75293a0edac7d0799252213" }
+    - { repo: "kubernetes", cksum: "556c2d8fcf1c9f2833fa31374c84787a8293af02" }
+    - { repo: "helm", cksum: "9f510b03859853f90844ebc0d22e2868406e5545" }
+
+- name: Add repos
+  ansible.builtin.apt_repository:
+    repo: "{{ item }}"
+    state: present
+  loop:
+    - "deb [arch={{ pkg_arch }} signed-by=/etc/apt/keyrings/docker.gpg ] https://download.docker.com/linux/debian {{ ansible_distribution_release }} stable"
+    - "deb [signed-by=/etc/apt/keyrings/kubernetes.gpg] https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_repo_version }}/deb/ /"
+    - "deb [arch={{ pkg_arch }} signed-by=/etc/apt/keyrings/helm.gpg ] https://baltocdn.com/helm/stable/debian/ all main"
+
+- name: Update apt
+  ansible.builtin.apt:
+    update_cache: true
+
+- name: Install packages on all nodes
+  ansible.builtin.apt:
+    name:
+      - containerd.io
+      - kubeadm
+      - kubelet
+      - kubectl
+    state: present
+
+- name: Install bash completion files
+  ansible.builtin.copy:
+    src: "files/{{ item }}_completion"
+    dest: "/usr/share/bash-completion/completions/{{ item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - kubectl
+    - helm
+
+- name: Install packages on only master node
+  ansible.builtin.apt:
+    name:
+      - git
+      - helm
+      - python3-kubernetes
+      - python3-yaml
+      - python3-jsonpatch
+    state: present
+  when: groups['kubernetes_master'] is defined and inventory_hostname in groups['kubernetes_master']
+
+- name: Configure containerd
+  ansible.builtin.copy:
+    src: containerd_config.toml
+    dest: /etc/containerd/config.toml
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Restart containerd
+
+- name: Get correct primary IP ip
+  ansible.builtin.set_fact:
+    primary_ip: "{{ is_vagrant is defined | ternary(ansible_eth1.ipv4.address, ansible_eno1.ipv4.address) }}"
+
+# NOTE: this is probably only a vagrant thing?
+- name: Update kubelet config
+  ansible.builtin.lineinfile:
+    path: /etc/default/kubelet
+    line: KUBELET_EXTRA_ARGS=--node-ip={{ primary_ip }}
+    owner: root
+    group: root
+    mode: "0644"
+    create: true
+  notify:
+    - Restart kubelet
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Set up kubernetes master
+  when: groups['kubernetes_master'] is defined and inventory_hostname in groups['kubernetes_master']
+  block:
+    - name: Copy kubeadm config file
+      ansible.builtin.template:
+        src: kubernetes/kubeadm-init.yml.j2
+        dest: /etc/kubernetes/kubeadm-init.yml
+        owner: root
+        group: root
+        mode: "0640"
+
+    - name: Initialize master node
+      ansible.builtin.command:
+        argv:
+          - kubeadm
+          - init
+          - --config=/etc/kubernetes/kubeadm-init.yml
+          - --skip-token-print
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Create .kube directory for operator on master
+      ansible.builtin.file:
+        path: "/root/.kube"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Copy kubernetes config to .kube directory on master
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "/root/.kube/config"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Install helm plugins
+      kubernetes.core.helm_plugin:
+        plugin_path: "{{ item.path }}"
+        plugin_version: "{{ item.version }}"
+      loop: "{{ kubernetes_helm_plugins }}"
+
+- name: Check for any nodes that need to be joined
+  when: groups['kubernetes_node'] is defined and inventory_hostname in groups['kubernetes_node']
+  # tags: dothis
+  block:
+    - name: Check if kubelet configuration exists
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_health_check
+
+    - name: Create kubelet fact
+      ansible.builtin.set_fact:
+        unjoined: true
+      when: kubelet_health_check.stat.exists is false
+
+# TODO: better (more secure?) way to pass around join command?
+- name: Get join command if needed
+  when: groups['kubernetes_master'] is defined and
+    inventory_hostname in groups['kubernetes_master'] and
+    (hostvars | json_query('*.unjoined[]') | sort | length > 0)
+  block:
+    - name: Run token create
+      ansible.builtin.command:
+        cmd: kubeadm token create --print-join-command
+      register: join_command
+      changed_when: false
+
+    - name: Set fact
+      ansible.builtin.set_fact:
+        join_command: "{{ join_command.stdout }}"
+
+- name: Join worker nodes
+  when: hostvars[inventory_hostname].unjoined is defined and hostvars[inventory_hostname].unjoined
+  ansible.builtin.command:
+    cmd: "{{ hostvars[groups['kubernetes_master'][0]].join_command }}"
+  register: join_output
+  changed_when: join_output.rc == 0
+
+- name: Install helm charts
+  when: groups['kubernetes_master'] is defined and inventory_hostname in groups['kubernetes_master']
+  block:
+    - name: Install helm repos
+      kubernetes.core.helm_repository:
+        name: "{{ item.name }}"
+        repo_url: "{{ item.repo_url }}"
+      loop: "{{ kubernetes_helm_repos }}"
+
+    - name: Install helm charts
+      kubernetes.core.helm:
+        name: "{{ item.name }}"
+        chart_ref: "{{ item.chart }}"
+        namespace: "{{ item.namespace }}"
+        create_namespace: true
+        chart_version: "{{ item.version }}"
+      loop: "{{ kubernetes_helm_charts }}"

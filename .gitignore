@@ -1,0 +1,5 @@
+test_certs/*.crt
+test_certs/*.key
+galaxy-roles/
+.vagrant/
+extra-vars.yml

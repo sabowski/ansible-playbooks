@@ -1,0 +1,3 @@
+---
+# vars
+common_root_pw: "{{ undef(hint='Must provide the root user password') }}"

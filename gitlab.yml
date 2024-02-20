@@ -1,0 +1,61 @@
+# vi: ft=yaml.ansible
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ansible/ansible-lint/main/src/ansiblelint/schemas/ansible.json#/$defs/playbook
+- name: Install and configure gitlab
+  hosts: gitlab
+  become: true
+  vars:
+    gitlab_install_version: 16.3.2
+
+  pre_tasks:
+
+    - name: Update package database
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 86400
+
+    - name: Ensure gitlab ssl directory exists
+      ansible.builtin.file:
+        path: /etc/gitlab/ssl
+        state: directory
+        mode: '0750'
+        owner: root
+        group: root
+
+    - name: Install gitlab cert
+      ansible.builtin.copy:
+        content: "{{ gitlab_ssl_cert }}"
+        dest: "/etc/gitlab/ssl/{{ gitlab_url | default(inventory_hostname) }}.crt"
+        mode: '0750'
+        owner: root
+        group: root
+
+    - name: Install gitlab ssl key
+      ansible.builtin.copy:
+        content: "{{ gitlab_ssl_key }}"
+        dest: "/etc/gitlab/ssl/{{ gitlab_url | default(inventory_hostname) }}.key"
+        mode: '0750'
+        owner: root
+        group: root
+
+  roles:
+    - role: common
+
+    - role: robertdebock.gitlab
+      gitlab_letsencrypt: false
+      gitlab_version: "{{ gitlab_install_version }}"
+      gitlab_external_url: "https://{{ gitlab_url | default(inventory_hostname) }}{{ gitlab_port is defined | ternary(':' + (gitlab_port | string()) if gitlab_port is defined else 'undef', '') }}" # noqa: yaml[line-length]
+      gitlab_rails_gitlab_email_enabled: "{{ enable_email | default(true) }}"
+      gitlab_cleanup_ruby: false
+      gitlab_rails_smtp_enable: "{{ enable_email | default(true) }}"
+      gitlab_rails_smtp_address: ""
+      gitlab_rails_smtp_user_name: "gitlab@local.test"
+      gitlab_rails_smtp_password: "{{ lookup('env', 'SMTP_PASSWORD')}}"
+      gitlab_rails_smtp_domain: "local.test"
+      gitlab_rails_smtp_enable_starttls_auto: false
+      gitlab_rails_smtp_tls: true
+      gitlab_rails_smtp_openssl_verify_mode: 'peer'
+      gitlab_rails_gitlab_email_from: 'gitlab@local.test'
+      gitlab_rails_gitlab_email_reply_to: 'noreply@local.test'
+      gitlab_rails_gitlab_email_display_name: GitLab Admin
+      gitlab_ssl_key: "{{ gitlab_url | default(inventory_hostname) }}.key"
+      gitlab_ssl_crt: "{{ gitlab_url | default(inventory_hostname) }}.crt"

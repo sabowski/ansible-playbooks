@@ -1,0 +1,20 @@
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+apiServer:
+  certSANs:
+  - {{ primary_ip }}
+clusterName: myCluster
+kubernetesVersion: v{{ kubernetes_repo_version | string + '.' + kubernetes_patch_version | string }}
+networking:
+  podSubnet: {{ kubernetes_pod_network_cidr }}
+---
+apiVersion: kubeadm.k8s.io/v1beta3                                                                                              
+kind: InitConfiguration                                                                                                         
+localAPIEndpoint:                                                                                                               
+  advertiseAddress: {{ primary_ip }}                                                                                                   
+---
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+mode: "ipvs"
+ipvs:
+  strictARP: true

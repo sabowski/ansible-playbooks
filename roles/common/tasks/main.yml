@@ -1,0 +1,59 @@
+---
+- name: Ensure custom certificates directory exists
+  ansible.builtin.file:
+    path: /usr/local/share/ca-certificates
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+
+- name: Install internal CA
+  ansible.builtin.copy:
+    content: "{{ common_root_ca }}\n"
+    dest: /usr/local/share/ca-certificates/local_ca.crt
+    mode: "0755"
+    owner: root
+    group: root
+  notify: Update ca-certificates
+
+- name: Set root password
+  ansible.builtin.user:
+    name: root
+    password: "{{ common_root_pw }}"
+
+- name: Install default packages
+  ansible.builtin.package:
+    name:
+      - htop
+      - systemd-timesyncd
+      - bash-completion
+    state: present
+
+# skip this on vagrant becaue of uid conflict. If you want to test this on
+# vagrant make sure no users in defaults/main.yml use 1000 for uid or gid, and
+# comment out the "tags" line for this block
+- name: Install groups and users
+  tags: vagrant_skip
+  block:
+    - name: Create groups
+      ansible.builtin.group:
+        name: "{{ item.group }}"
+        gid: "{{ item.gid }}"
+      loop: "{{ common_users }}"
+
+    - name: Install users
+      ansible.builtin.user:
+        comment: "{{ item.name }}"
+        name: "{{ item.username }}"
+        group: "{{ item.group }}"
+        groups: "{{ item.groups }}"
+        password: "{{ item.password }}"
+        uid: "{{ item.uid }}"
+        shell: "/usr/bin/bash"
+      loop: "{{ common_users }}"
+
+    - name: Install public ssh keys
+      ansible.posix.authorized_key:
+        user: "{{ item.username }}"
+        key: "{{ lookup('file', '{{ item.username }}_authorized_keys') }}"
+      loop: "{{ common_users }}"
